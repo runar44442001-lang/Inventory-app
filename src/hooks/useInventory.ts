@@ -1,66 +1,58 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useCallback } from 'react';
 import type { Category } from '../types';
 
-const API_BASE = import.meta.env.DEV ? 'http://localhost:3001' : '';
+const STORAGE_KEY = 'inventory-app-data';
 
-async function fetchState() {
-  const res = await fetch(`${API_BASE}/api/state`);
-  if (!res.ok) throw new Error('Failed to fetch state');
-  return res.json();
+const DEFAULT_CATEGORIES: { id: string; name: string }[] = [
+  { id: 'drinks', name: 'DRINKS' },
+  { id: 'party', name: 'PARTY' },
+  { id: 'cleaning', name: 'CLEANING' },
+  { id: 'office', name: 'OFFICE SUPPLIES' },
+];
+
+interface MasterItems {
+  [key: string]: string[];
 }
 
-async function apiAddItem(categoryId: string, name: string) {
-  const res = await fetch(`${API_BASE}/api/items`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ categoryId, name }),
-  });
-  if (!res.ok) throw new Error('Failed to add item');
-  return res.json();
+interface WeekData {
+  categories: Category[];
+  savedAt: string;
 }
 
-async function apiRemoveItem(categoryId: string, itemId: string) {
-  const res = await fetch(`${API_BASE}/api/items/${categoryId}/${itemId}`, {
-    method: 'DELETE',
-  });
-  if (!res.ok) throw new Error('Failed to remove item');
-  return res.json();
+interface AppState {
+  masterItems: MasterItems;
+  weeks: Record<string, WeekData>;
 }
 
-async function apiUpdateStock(categoryId: string, itemId: string, delta: number) {
-  const res = await fetch(`${API_BASE}/api/items/${categoryId}/${itemId}/stock`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ delta }),
-  });
-  if (!res.ok) throw new Error('Failed to update stock');
-  return res.json();
+function getDefaultState(): AppState {
+  return {
+    masterItems: { drinks: [], party: [], cleaning: [], office: [] },
+    weeks: {},
+  };
 }
 
-async function apiUpdateOrder(categoryId: string, itemId: string, delta: number) {
-  const res = await fetch(`${API_BASE}/api/items/${categoryId}/${itemId}/order`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ delta }),
-  });
-  if (!res.ok) throw new Error('Failed to update order');
-  return res.json();
+function loadState(): AppState {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return getDefaultState();
 }
 
-async function apiStartNewWeek() {
-  const res = await fetch(`${API_BASE}/api/weeks/new`, {
-    method: 'POST',
-  });
-  if (!res.ok) throw new Error('Failed to start new week');
-  return res.json();
+function saveState(state: AppState) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-async function apiAddNextWeek() {
-  const res = await fetch(`${API_BASE}/api/weeks/next`, {
-    method: 'POST',
-  });
-  if (!res.ok) throw new Error('Failed to add next week');
-  return res.json();
+function categoriesFromMaster(masterItems: MasterItems): Category[] {
+  return DEFAULT_CATEGORIES.map((cat) => ({
+    ...cat,
+    items: (masterItems[cat.id] || []).map((name, i) => ({
+      id: `master-${cat.id}-${i}`,
+      name,
+      inStock: 0,
+      toOrder: 0,
+    })),
+  }));
 }
 
 function getMonday(date: Date): Date {
@@ -99,115 +91,204 @@ export function getWeekLabel(weekId: string): string {
 }
 
 export function useInventory() {
-  const [categories, setCategories] = useState<Category[]>([]);
+  const [state, setState] = useState<AppState>(loadState);
   const [currentWeekId, setCurrentWeekId] = useState<string>(getCurrentWeekId());
-  const [allWeekIds, setAllWeekIds] = useState<string[]>([]);
   const [isViewingHistory, setIsViewingHistory] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const pollRef = useRef<number | null>(null);
+  const [loading] = useState(false);
 
-  const loadState = useCallback(async () => {
-    try {
-      const data = await fetchState();
-      setCategories(data.categories);
-      setCurrentWeekId(data.currentWeekId);
-      setAllWeekIds(data.allWeekIds);
-    } catch (err) {
-      console.error('Failed to load state:', err);
-    } finally {
-      setLoading(false);
-    }
+  const currentWeekData = state.weeks[currentWeekId];
+  const categories = currentWeekData
+    ? currentWeekData.categories
+    : categoriesFromMaster(state.masterItems);
+
+  const allWeekIds = Array.from(
+    new Set([...Object.keys(state.weeks), getCurrentWeekId()])
+  )
+    .sort()
+    .reverse();
+
+  const update = useCallback((updater: (prev: AppState) => AppState) => {
+    setState((prev) => {
+      const next = updater(prev);
+      saveState(next);
+      return next;
+    });
   }, []);
-
-  useEffect(() => {
-    loadState();
-  }, [loadState]);
-
-  useEffect(() => {
-    pollRef.current = window.setInterval(() => {
-      if (!isViewingHistory) {
-        loadState();
-      }
-    }, 3000);
-
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
-  }, [isViewingHistory, loadState]);
 
   const switchWeek = useCallback((weekId: string) => {
     setCurrentWeekId(weekId);
     setIsViewingHistory(weekId !== getCurrentWeekId());
-    fetchState().then((data) => {
-      const weekData = data.weeks?.[weekId];
-      if (weekData) {
-        setCategories(weekData.categories);
-      } else {
-        setCategories([]);
-      }
-    }).catch(console.error);
   }, []);
 
-  const startNewWeek = useCallback(async () => {
-    try {
-      const data = await apiStartNewWeek();
-      setCategories(data.categories);
-      setCurrentWeekId(data.currentWeekId);
-      setAllWeekIds(data.allWeekIds);
-      setIsViewingHistory(false);
-    } catch (err) {
-      console.error('Failed to start new week:', err);
-    }
+  const startNewWeek = useCallback(() => {
+    const weekId = getCurrentWeekId();
+    update((prev) => ({
+      ...prev,
+      weeks: {
+        ...prev.weeks,
+        [weekId]: {
+          categories: categoriesFromMaster(prev.masterItems),
+          savedAt: new Date().toISOString(),
+        },
+      },
+    }));
+    setCurrentWeekId(weekId);
+    setIsViewingHistory(false);
+  }, [update]);
+
+  const addNextWeek = useCallback(() => {
+    const nextId = getNextWeekId();
+    update((prev) => ({
+      ...prev,
+      weeks: {
+        ...prev.weeks,
+        [nextId]: {
+          categories: categoriesFromMaster(prev.masterItems),
+          savedAt: new Date().toISOString(),
+        },
+      },
+    }));
+    setCurrentWeekId(nextId);
+    setIsViewingHistory(false);
+  }, [update]);
+
+  const ensureWeek = useCallback((prev: AppState, weekId: string): AppState => {
+    if (prev.weeks[weekId]) return prev;
+    return {
+      ...prev,
+      weeks: {
+        ...prev.weeks,
+        [weekId]: {
+          categories: categoriesFromMaster(prev.masterItems),
+          savedAt: new Date().toISOString(),
+        },
+      },
+    };
   }, []);
 
-  const addNextWeek = useCallback(async () => {
-    try {
-      const data = await apiAddNextWeek();
-      setCategories(data.categories);
-      setCurrentWeekId(data.currentWeekId);
-      setAllWeekIds(data.allWeekIds);
-      setIsViewingHistory(false);
-    } catch (err) {
-      console.error('Failed to add next week:', err);
-    }
-  }, []);
+  const addItem = useCallback((categoryId: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    update((prev) => {
+      const existing = prev.masterItems[categoryId] || [];
+      const newMaster = existing.includes(trimmed)
+        ? existing
+        : [...existing, trimmed];
+      const newMasterItems = { ...prev.masterItems, [categoryId]: newMaster };
 
-  const addItem = useCallback(async (categoryId: string, name: string) => {
-    try {
-      const data = await apiAddItem(categoryId, name);
-      setCategories(data.categories);
-      setAllWeekIds(data.allWeekIds);
-    } catch (err) {
-      console.error('Failed to add item:', err);
-    }
-  }, []);
+      const weekId = getCurrentWeekId();
+      let newState = { ...prev, masterItems: newMasterItems };
+      newState = ensureWeek(newState, weekId);
 
-  const removeItem = useCallback(async (categoryId: string, itemId: string) => {
-    try {
-      const data = await apiRemoveItem(categoryId, itemId);
-      setCategories(data.categories);
-    } catch (err) {
-      console.error('Failed to remove item:', err);
-    }
-  }, []);
+      const weekData = newState.weeks[weekId];
+      const cats = weekData.categories.map((c) =>
+        c.id === categoryId
+          ? {
+              ...c,
+              items: [
+                ...c.items,
+                { id: Date.now().toString(), name: trimmed, inStock: 0, toOrder: 0 },
+              ],
+            }
+          : c
+      );
+      return {
+        ...newState,
+        weeks: {
+          ...newState.weeks,
+          [weekId]: { ...weekData, categories: cats },
+        },
+      };
+    });
+  }, [update, ensureWeek]);
 
-  const updateStock = useCallback(async (categoryId: string, itemId: string, delta: number) => {
-    try {
-      const data = await apiUpdateStock(categoryId, itemId, delta);
-      setCategories(data.categories);
-    } catch (err) {
-      console.error('Failed to update stock:', err);
-    }
-  }, []);
+  const removeItem = useCallback((categoryId: string, itemId: string) => {
+    update((prev) => {
+      const weekId = getCurrentWeekId();
+      const weekData = prev.weeks[weekId];
+      if (!weekData) return prev;
 
-  const updateOrder = useCallback(async (categoryId: string, itemId: string, delta: number) => {
-    try {
-      const data = await apiUpdateOrder(categoryId, itemId, delta);
-      setCategories(data.categories);
-    } catch (err) {
-      console.error('Failed to update order:', err);
-    }
-  }, []);
+      let removedName = '';
+      const cats = weekData.categories.map((c) => {
+        if (c.id !== categoryId) return c;
+        const item = c.items.find((i) => i.id === itemId);
+        if (item) removedName = item.name;
+        return { ...c, items: c.items.filter((i) => i.id !== itemId) };
+      });
+
+      const newMasterItems = removedName
+        ? {
+            ...prev.masterItems,
+            [categoryId]: (prev.masterItems[categoryId] || []).filter(
+              (n) => n !== removedName
+            ),
+          }
+        : prev.masterItems;
+
+      return {
+        ...prev,
+        masterItems: newMasterItems,
+        weeks: {
+          ...prev.weeks,
+          [weekId]: { ...weekData, categories: cats },
+        },
+      };
+    });
+  }, [update]);
+
+  const updateStock = useCallback((categoryId: string, itemId: string, delta: number) => {
+    update((prev) => {
+      const weekId = getCurrentWeekId();
+      let newState = ensureWeek(prev, weekId);
+      const weekData = newState.weeks[weekId];
+      const cats = weekData.categories.map((c) =>
+        c.id === categoryId
+          ? {
+              ...c,
+              items: c.items.map((i) =>
+                i.id === itemId
+                  ? { ...i, inStock: Math.max(0, i.inStock + delta) }
+                  : i
+              ),
+            }
+          : c
+      );
+      return {
+        ...newState,
+        weeks: {
+          ...newState.weeks,
+          [weekId]: { ...weekData, categories: cats },
+        },
+      };
+    });
+  }, [update, ensureWeek]);
+
+  const updateOrder = useCallback((categoryId: string, itemId: string, delta: number) => {
+    update((prev) => {
+      const weekId = getCurrentWeekId();
+      let newState = ensureWeek(prev, weekId);
+      const weekData = newState.weeks[weekId];
+      const cats = weekData.categories.map((c) =>
+        c.id === categoryId
+          ? {
+              ...c,
+              items: c.items.map((i) =>
+                i.id === itemId
+                  ? { ...i, toOrder: Math.max(0, i.toOrder + delta) }
+                  : i
+              ),
+            }
+          : c
+      );
+      return {
+        ...newState,
+        weeks: {
+          ...newState.weeks,
+          [weekId]: { ...weekData, categories: cats },
+        },
+      };
+    });
+  }, [update, ensureWeek]);
 
   return {
     categories,
