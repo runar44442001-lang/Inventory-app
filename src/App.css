@@ -107,15 +107,18 @@ body {
 .item-name {
   font-weight: 500;
   font-size: 0.9rem;
-  min-width: 80px;
+  width: 140px;
+  min-width: 140px;
   flex-shrink: 0;
+  word-break: break-word;
+  line-height: 1.3;
 }
 
 .item-controls {
   display: flex;
   align-items: center;
   gap: 1rem;
-  flex-wrap: wrap;
+  flex: 1;
   justify-content: flex-end;
 }
 
